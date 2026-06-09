@@ -1,0 +1,24 @@
+# Core Exclusions requested by User
+backend/.env
+md files/
+
+# Python caching & model/temp files
+**/__pycache__/
+*.pyc
+backend/models/*.pkl
+
+# Node / JS files
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# Logs
+*.log
+logs/
+
+# Editor / IDE configurations
+.vscode/
+.idea/
+.DS_Store
+.gemini/

@@ -1,0 +1,315 @@
+"""
+Chat API — conversations, query, history, feedback.
+
+Protected endpoints requiring JWT authentication.
+"""
+
+import time
+from flask import Blueprint, request, jsonify, current_app
+from api.auth import token_required
+from bson.objectid import ObjectId
+import logging
+
+chat_bp = Blueprint('chat', __name__)
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════
+# CONVERSATION ENDPOINTS
+# ═══════════════════════════════════════════════════════════
+
+@chat_bp.route('/conversations', methods=['POST'])
+@token_required
+def create_conversation():
+    """Create a new conversation."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    data = request.json or {}
+    title = data.get('title', 'New Chat')
+
+    conv_id = current_app.db.create_conversation(
+        user_id=request.user_id,
+        title=title
+    )
+    return jsonify({'conversation_id': conv_id, 'title': title}), 201
+
+
+@chat_bp.route('/conversations', methods=['GET'])
+@token_required
+def list_conversations():
+    """Get user's conversations (newest first)."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    limit = request.args.get('limit', 30, type=int)
+    offset = request.args.get('offset', 0, type=int)
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+
+    convs = current_app.db.get_user_conversations(
+        request.user_id, limit=limit, offset=offset
+    )
+    return jsonify({'conversations': convs}), 200
+
+
+@chat_bp.route('/conversations/<conv_id>', methods=['GET'])
+@token_required
+def get_conversation(conv_id):
+    """Get all messages in a conversation."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    messages = current_app.db.get_conversation_messages(
+        conv_id, request.user_id
+    )
+    return jsonify({'messages': messages}), 200
+
+
+@chat_bp.route('/conversations/<conv_id>', methods=['PATCH'])
+@token_required
+def rename_conversation(conv_id):
+    """Rename a conversation."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    data = request.json or {}
+    title = data.get('title')
+    if not title:
+        return jsonify({'error': 'title is required'}), 400
+
+    current_app.db.update_conversation_title(
+        conv_id, request.user_id, title
+    )
+    return jsonify({'success': True}), 200
+
+
+@chat_bp.route('/conversations/<conv_id>', methods=['DELETE'])
+@token_required
+def delete_conversation(conv_id):
+    """Delete a conversation and all its messages."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    deleted = current_app.db.delete_conversation(conv_id, request.user_id)
+    if deleted:
+        return jsonify({'success': True}), 200
+    return jsonify({'error': 'Conversation not found'}), 404
+
+
+# ═══════════════════════════════════════════════════════════
+# QUERY (SEND MESSAGE) ENDPOINT
+# ═══════════════════════════════════════════════════════════
+
+@chat_bp.route('/query', methods=['POST'])
+@token_required
+def chat_query():
+    """
+    Process a user's medical query within a conversation.
+
+    If no conversation_id provided, creates a new conversation
+    automatically (title = first query text).
+    """
+    start_time = time.time()
+
+    data = request.json
+    if not data or 'user_query' not in data:
+        return jsonify({'error': 'user_query is required'}), 400
+
+    user_query = data['user_query'].strip()
+    conversation_id = data.get('conversation_id')
+
+    # Input validation
+    if not user_query:
+        return jsonify({'error': 'Query cannot be empty'}), 400
+    if len(user_query) > 500:
+        return jsonify({'error': 'Query too long (max 500 characters)'}), 400
+
+    # Auto-create conversation if none provided
+    new_conversation = False
+    if not conversation_id and current_app.db is not None:
+        # Title = first 50 chars of the first query
+        title = user_query[:50] + ('...' if len(user_query) > 50 else '')
+        conversation_id = current_app.db.create_conversation(
+            user_id=request.user_id,
+            title=title
+        )
+        new_conversation = True
+
+    entities = {}
+
+    # ── Primary: ML Symptom Classifier ────────────────────
+    ml_result = current_app.symptom_classifier.predict(user_query)
+
+    if ml_result.get('success'):
+        intent = 'disease_prediction'
+        confidence = ml_result['confidence']
+        category = ml_result['disease']
+
+        response_data = {
+            'response': ml_result['response'],
+            'home_remedies': ml_result.get('precautions', []),
+            'specialist': ml_result.get('specialist'),
+            'urgency': ml_result.get('urgency', 'low'),
+            'emergency': ml_result.get('urgency') == 'emergency',
+        }
+
+        entities = {
+            'matched_symptoms': ml_result.get('matched_symptoms', []),
+            'severity_score': ml_result.get('severity_score', 0),
+            'description': ml_result.get('description', ''),
+            'dt_prediction': ml_result.get('dt_prediction', ''),
+            'svm_prediction': ml_result.get('svm_prediction', ''),
+        }
+    else:
+        # ── Fallback: QA Matcher for general questions ────
+        qa_match = current_app.qa_matcher.match(user_query)
+        intent = qa_match.get('base_problem', 'general_query')
+        confidence = qa_match.get('confidence', 0.5)
+        category = qa_match.get('base_problem', 'general')
+
+        response_data = {
+            'response': qa_match['answer'],
+            'home_remedies': [],
+            'specialist': None,
+            'urgency': 'low',
+            'emergency': False,
+        }
+
+    # Calculate response time
+    response_time_ms = int((time.time() - start_time) * 1000)
+
+    # ── Save to Database ──────────────────────────────────
+    query_id = None
+    if current_app.db is not None:
+        try:
+            query_id = current_app.db.save_query(
+                user_id=request.user_id,
+                query_text=user_query,
+                intent=intent,
+                confidence=confidence,
+                category=category,
+                response=response_data['response'],
+                recommendations={
+                    'home_remedies': response_data['home_remedies'],
+                    'specialist': response_data['specialist'],
+                    'urgency': response_data['urgency'],
+                    'emergency': response_data['emergency'],
+                },
+                entities=entities,
+                response_time_ms=response_time_ms,
+                conversation_id=conversation_id,
+            )
+
+            # Audit log
+            current_app.db.log_action(
+                user_id=request.user_id,
+                action='chat_query',
+                endpoint='/api/chat/query',
+                method='POST',
+                status_code=200,
+                ip_address=request.remote_addr,
+                details={'intent': intent, 'confidence': confidence}
+            )
+        except Exception as e:
+            logger.error(f"DB save error: {e}")
+
+    # ── Build Response ────────────────────────────────────
+    result = {
+        'query': user_query,
+        'intent': intent,
+        'confidence': confidence,
+        'category': category,
+        'response': response_data['response'],
+        'recommendations': {
+            'home_remedies': response_data['home_remedies'],
+            'specialist': response_data['specialist'],
+            'urgency': response_data['urgency'],
+            'emergency': response_data['emergency'],
+        },
+        'entities': entities,
+        'response_time_ms': response_time_ms,
+        'query_id': query_id,
+        'conversation_id': conversation_id,
+        'new_conversation': new_conversation,
+    }
+
+    return jsonify(result), 200
+
+
+# ═══════════════════════════════════════════════════════════
+# HISTORY & FEEDBACK (kept for backward compatibility)
+# ═══════════════════════════════════════════════════════════
+
+@chat_bp.route('/history', methods=['GET'])
+@token_required
+def chat_history():
+    """Get user's query history (paginated)."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    limit = request.args.get('limit', 50, type=int)
+    offset = request.args.get('offset', 0, type=int)
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+
+    queries = current_app.db.get_user_queries(
+        request.user_id, limit=limit, offset=offset
+    )
+    total = current_app.db.get_query_count(request.user_id)
+
+    return jsonify({
+        'total_queries': total,
+        'limit': limit,
+        'offset': offset,
+        'queries': queries
+    }), 200
+
+
+@chat_bp.route('/feedback', methods=['POST'])
+@token_required
+def chat_feedback():
+    """Add user feedback to a query."""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    query_id = data.get('query_id')
+    feedback = data.get('feedback')
+
+    if not query_id or not feedback:
+        return jsonify({'error': 'query_id and feedback are required'}), 400
+
+    if feedback not in ('helpful', 'not_helpful'):
+        return jsonify({
+            'error': 'feedback must be "helpful" or "not_helpful"'
+        }), 400
+
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    try:
+        current_app.db.add_feedback(query_id, feedback)
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Feedback error: {e}")
+        return jsonify({'error': 'Failed to save feedback'}), 500
+
+
+@chat_bp.route('/history/<query_id>', methods=['DELETE'])
+@token_required
+def delete_chat_history(query_id):
+    """Delete a specific query from history."""
+    if current_app.db is not None:
+        try:
+            result = current_app.db.db.queries.delete_one({
+                '_id': ObjectId(query_id),
+                'user_id': ObjectId(request.user_id)
+            })
+            if result.deleted_count > 0:
+                return jsonify({'success': True}), 200
+            return jsonify({'error': 'Query not found'}), 404
+        except Exception as e:
+            logger.error(f"Error deleting query: {e}")
+            return jsonify({'error': 'Server error'}), 500
+    return jsonify({'error': 'Database not connected'}), 500
