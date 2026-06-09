@@ -253,3 +253,26 @@ def get_profile():
             user[field] = user[field].isoformat()
 
     return jsonify(user), 200
+
+@auth_bp.route('/profile', methods=['PATCH'])
+@token_required
+def update_profile():
+    """Update user medical profile."""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+
+    updated_user = current_app.db.update_user_profile(request.user_id, data)
+    
+    if not updated_user:
+        return jsonify({'error': 'Failed to update profile'}), 500
+
+    updated_user.pop('password_hash', None)
+    for field in ('created_at', 'last_login'):
+        if isinstance(updated_user.get(field), datetime):
+            updated_user[field] = updated_user[field].isoformat()
+
+    return jsonify({'message': 'Profile updated', 'user': updated_user}), 200

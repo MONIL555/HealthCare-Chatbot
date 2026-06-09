@@ -9,6 +9,8 @@ from flask import Blueprint, request, jsonify, current_app
 from api.auth import token_required
 from bson.objectid import ObjectId
 import logging
+from langdetect import detect
+from deep_translator import GoogleTranslator
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -136,10 +138,21 @@ def chat_query():
         )
         new_conversation = True
 
+    # ── Language Detection & Translation ──────────────────
+    user_lang = 'en'
+    translated_query = user_query
+    try:
+        user_lang = detect(user_query)
+        if user_lang != 'en':
+            translator = GoogleTranslator(source=user_lang, target='en')
+            translated_query = translator.translate(user_query)
+    except Exception as e:
+        logger.warning(f"Language detection/translation failed: {e}")
+
     entities = {}
 
     # ── Primary: ML Symptom Classifier ────────────────────
-    ml_result = current_app.symptom_classifier.predict(user_query)
+    ml_result = current_app.symptom_classifier.predict(translated_query)
 
     if ml_result.get('success'):
         intent = 'disease_prediction'
@@ -162,19 +175,38 @@ def chat_query():
             'svm_prediction': ml_result.get('svm_prediction', ''),
         }
     else:
-        # ── Fallback: QA Matcher for general questions ────
-        qa_match = current_app.qa_matcher.match(user_query)
-        intent = qa_match.get('base_problem', 'general_query')
-        confidence = qa_match.get('confidence', 0.5)
-        category = qa_match.get('base_problem', 'general')
+        # ── Fallback: Gemini LLM for general questions ────
+        user_profile = None
+        if current_app.db is not None:
+            user_profile = current_app.db.get_user_by_id(request.user_id)
+            
+        gemini_response = current_app.gemini_fallback.generate_response(translated_query, user_profile)
+        
+        intent = 'general_query'
+        confidence = 0.90  # LLM response
+        category = 'general_health'
 
         response_data = {
-            'response': qa_match['answer'],
+            'response': gemini_response,
             'home_remedies': [],
             'specialist': None,
             'urgency': 'low',
             'emergency': False,
         }
+
+    # ── Translate Response Back ─────────────────────────────
+    if user_lang != 'en':
+        try:
+            translator_back = GoogleTranslator(source='en', target=user_lang)
+            response_data['response'] = translator_back.translate(response_data['response'])
+            if response_data['home_remedies']:
+                response_data['home_remedies'] = [
+                    translator_back.translate(r) for r in response_data['home_remedies']
+                ]
+            if response_data['specialist']:
+                response_data['specialist'] = translator_back.translate(response_data['specialist'])
+        except Exception as e:
+            logger.warning(f"Failed to translate response back: {e}")
 
     # Calculate response time
     response_time_ms = int((time.time() - start_time) * 1000)
@@ -232,6 +264,7 @@ def chat_query():
         'query_id': query_id,
         'conversation_id': conversation_id,
         'new_conversation': new_conversation,
+        'follow_up_question': ml_result.get('follow_up_question') if ml_result.get('success') else None
     }
 
     return jsonify(result), 200

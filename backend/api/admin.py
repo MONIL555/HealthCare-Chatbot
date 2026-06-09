@@ -60,3 +60,43 @@ def get_logs():
         'total_logs': len(logs),
         'logs': logs
     }), 200
+
+
+@admin_bp.route('/analytics', methods=['GET'])
+@token_required
+def get_analytics():
+    """Get system-wide analytics for the dashboard."""
+    if current_app.db is None:
+        return jsonify({'error': 'Database unavailable'}), 503
+        
+    db = current_app.db.db
+    
+    total_users = db.users.count_documents({})
+    total_queries = db.queries.count_documents({})
+    
+    intents = list(db.queries.aggregate([
+        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10}
+    ]))
+    
+    urgencies = list(db.queries.aggregate([
+        {"$group": {"_id": "$recommendations.urgency", "count": {"$sum": 1}}}
+    ]))
+    
+    timeline = list(db.queries.aggregate([
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+            "queries": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}},
+        {"$limit": 30}
+    ]))
+    
+    return jsonify({
+        'total_users': total_users,
+        'total_queries': total_queries,
+        'intents': [{'name': i['_id'] or 'General', 'value': i['count']} for i in intents],
+        'urgencies': [{'name': i['_id'] or 'Low', 'value': i['count']} for i in urgencies],
+        'timeline': [{'date': i['_id'], 'queries': i['queries']} for i in timeline]
+    }), 200

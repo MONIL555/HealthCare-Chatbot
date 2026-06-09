@@ -453,6 +453,17 @@ class SymptomClassifier:
             readable_symptoms, urgency, severity_score
         )
 
+        # ── Follow-up for low confidence ──────────────────────
+        follow_up_question = None
+        if confidence < 0.60:
+            follow_up_question = (
+                "I'm not entirely confident with this assessment based on the few symptoms provided. "
+                "Could you share more details, such as how long you've had these symptoms, "
+                "or any other minor changes you've noticed in your body?"
+            )
+            # Append follow-up to the response
+            response_text += f"\n\n**Note:** {follow_up_question}"
+
         return {
             "success": True,
             "disease": final_disease,
@@ -467,6 +478,7 @@ class SymptomClassifier:
             "urgency": urgency,
             "specialist": specialist,
             "response": response_text,
+            "follow_up_question": follow_up_question
         }
 
     def _calc_severity(self, symptoms: list, days: int = 1) -> int:

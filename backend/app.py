@@ -13,7 +13,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from config import Config, DevelopmentConfig
 from database.db import init_db
-from nlp.qa_matcher import QAMatcher
+from nlp.gemini_fallback import GeminiFallback
 from nlp.symptom_classifier import SymptomClassifier
 import logging
 import os
@@ -57,11 +57,10 @@ def create_app(config_class=None):
     app.symptom_classifier = symptom_classifier
     logger.info("Symptom Classifier loaded (%d diseases)", len(symptom_classifier.label_encoder.classes_))
 
-    # Fallback: TF-IDF QA matcher for general questions
-    qa_matcher = QAMatcher()
-    qa_matcher.load_models()
-    app.qa_matcher = qa_matcher
-    logger.info("QA Matcher loaded (fallback)")
+    # Fallback: Gemini LLM for general health questions
+    gemini_fallback = GeminiFallback()
+    app.gemini_fallback = gemini_fallback
+    logger.info("Gemini Fallback loaded")
 
     # ── Blueprints ───────────────────────────────────────────
     from api.auth import auth_bp

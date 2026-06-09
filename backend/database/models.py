@@ -74,6 +74,13 @@ class Database:
             'created_at': datetime.utcnow(),
             'last_login': None,
             'is_active': True,
+            'role': 'patient',  # Default role
+            'age': None,
+            'gender': None,
+            'weight': None,
+            'height': None,
+            'medical_conditions': [],
+            'allergies': [],
             'preferences': {
                 'theme': 'light',
                 'notifications': True
@@ -105,6 +112,21 @@ class Database:
             {'_id': ObjectId(user_id)},
             {'$set': {'last_login': datetime.utcnow()}}
         )
+
+    def update_user_profile(self, user_id: str, profile_data: Dict) -> Optional[Dict]:
+        """Update user medical profile fields."""
+        # Filter to only allow profile fields
+        allowed_fields = ['age', 'gender', 'weight', 'height', 'medical_conditions', 'allergies']
+        update_doc = {k: v for k, v in profile_data.items() if k in allowed_fields}
+        
+        if not update_doc:
+            return self.get_user_by_id(user_id)
+            
+        self.db.users.update_one(
+            {'_id': ObjectId(user_id)},
+            {'$set': update_doc}
+        )
+        return self.get_user_by_id(user_id)
 
     # ═══════════════════════════════════════════════════════
     # QUERY OPERATIONS
