@@ -1,4 +1,5 @@
 import os
+# pyrefly: ignore [missing-import]
 import google.generativeai as genai
 import logging
 from typing import Dict, Optional
@@ -13,7 +14,7 @@ class GeminiFallback:
             self.model = None
         else:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.model = genai.GenerativeModel('gemini-3.5-flash')
 
     def generate_response(self, query: str, user_profile: Optional[Dict] = None) -> str:
         """Generates a contextual response using Gemini API."""

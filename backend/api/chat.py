@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify, current_app
 from api.auth import token_required
 from bson.objectid import ObjectId
 import logging
+import re
 from langdetect import detect
 from deep_translator import GoogleTranslator
 
@@ -175,15 +176,36 @@ def chat_query():
             'svm_prediction': ml_result.get('svm_prediction', ''),
         }
     else:
-        # ── Fallback: Gemini LLM for general questions ────
-        user_profile = None
-        if current_app.db is not None:
-            user_profile = current_app.db.get_user_by_id(request.user_id)
-            
-        gemini_response = current_app.gemini_fallback.generate_response(translated_query, user_profile)
+        # ── Pre-flight check to avoid API requests for non-medical queries ────
+        medical_keywords = {
+            'health', 'medical', 'medicine', 'doctor', 'hospital', 'pain', 'ache',
+            'pill', 'tablet', 'disease', 'ill', 'illness', 'sick', 'sickness',
+            'syndrome', 'therapy', 'treatment', 'vitamin', 'sleep', 'diet',
+            'nutrition', 'heart', 'blood', 'brain', 'stomach', 'liver', 'kidney',
+            'lung', 'symptom', 'symptoms', 'surgery', 'clinic', 'pharmacy',
+            'prescription', 'fever', 'cough', 'cold', 'flu', 'virus', 'infection',
+            'cancer', 'diabetes', 'pressure', 'injury', 'wound', 'heal', 'pregnant',
+            'pregnancy', 'mental', 'depression', 'anxiety', 'stress', 'dental',
+            'tooth', 'teeth', 'eye', 'vision', 'ear', 'nose', 'throat', 'skin',
+            'bone', 'joint', 'muscle', 'weight', 'fatigue', 'energy'
+        }
         
-        intent = 'general_query'
-        confidence = 0.90  # LLM response
+        query_words = set(re.findall(r'\w+', translated_query.lower()))
+        is_medical = bool(query_words.intersection(medical_keywords))
+        
+        if not is_medical:
+            gemini_response = "I am a specialized healthcare assistant. I can only answer medical and health-related questions. Please ask me about symptoms, conditions, medications, or general health advice."
+            intent = 'non_medical_query'
+        else:
+            # ── Fallback: Gemini LLM for general health questions ────
+            user_profile = None
+            if current_app.db is not None:
+                user_profile = current_app.db.get_user_by_id(request.user_id)
+                
+            gemini_response = current_app.gemini_fallback.generate_response(translated_query, user_profile)
+            intent = 'general_query'
+        
+        confidence = 0.90
         category = 'general_health'
 
         response_data = {

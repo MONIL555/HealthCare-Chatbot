@@ -408,9 +408,9 @@ export default function ChatPage() {
                         isUser
                           ? 'bg-primary text-primary-foreground rounded-br-sm'
                           : isEmergency
-                            ? 'bg-destructive/10 border border-destructive text-destructive-foreground rounded-bl-sm'
+                            ? 'bg-destructive/10 border border-destructive text-destructive rounded-bl-sm'
                             : msg.isError
-                              ? 'bg-destructive/10 border border-destructive text-destructive-foreground rounded-bl-sm'
+                              ? 'bg-destructive/10 border border-destructive text-destructive rounded-bl-sm'
                               : 'bg-card border text-card-foreground rounded-bl-sm'
                       }`}
                     >
